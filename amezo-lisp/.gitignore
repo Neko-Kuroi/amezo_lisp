@@ -1,4 +1,5 @@
 *.fasl
+cloudflared
 trip_secret.txt
 trip_secret.txt.tmp*
 id_secret.txt

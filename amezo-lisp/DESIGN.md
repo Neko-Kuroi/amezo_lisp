@@ -56,3 +56,7 @@ Python 版 (`amezo-python`、最新パッチ適用済み) を SBCL / Common Lisp
   Lisp 版は UTF-8 として置換文字で受ける。
 - Cloudflare トンネルは `--tunnel` 指定時だけ `cloudflared` を起動する
   (Python 版は既定でトンネルを張る。Lisp 版の既定はローカル起動)。
+  cloudflared の用意 (PATH に無ければアプリフォルダへ自動ダウンロード)・
+  公開URLの表示・終了時の後片付けは Python 版 `setup_expose.py` の
+  `start_tunnel` 相当を `src/server.lisp` に実装した。
+  事前準備だけを行う `--setup-tunnel` サブコマンドもある。

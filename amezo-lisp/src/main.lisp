@@ -80,6 +80,9 @@
       ;; --make-delpass: delpass.txt を作る (Python 版 setup_expose.py --make-hash と同じ役割)
       ((and args (string= (first args) "--make-delpass"))
        (sb-ext:exit :code (write-delpass (or (second args) ""))))
+      ;; --setup-tunnel: cloudflared を用意する (無ければ自動ダウンロード)
+      ((and args (string= (first args) "--setup-tunnel"))
+       (sb-ext:exit :code (setup-tunnel-command)))
       ;; --cgi amezo|dai|admin|jump
       ((and args (string= (first args) "--cgi"))
        (sb-ext:exit :code (run-cgi (or (second args) ""))))

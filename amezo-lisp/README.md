@@ -32,6 +32,20 @@ sh run.sh --port 3000     # ポート変更
 sh run.sh --tunnel        # cloudflared で公開 (明示したときだけ)
 ```
 
+### Cloudflare Tunnel で公開する
+
+Python 版 `setup_expose.py` の `start_tunnel` 相当を実装してあります。
+
+```sh
+sh run.sh --setup-tunnel  # 事前準備: cloudflared を用意する (無ければ自動ダウンロード)
+sh run.sh --tunnel        # サーバー + トンネルを起動し、公開URLを表示する
+```
+
+cloudflared が PATH に無ければ、公式リリースからアプリフォルダへ
+ダウンロードして使います (x86_64 / ARM64 対応)。トンネル起動時に
+`https://….trycloudflare.com` の公開URLが表示されます。
+サーバーを Ctrl+C で止めるとトンネルも一緒に終了します。
+
 初回起動時に板フォルダ (`blist.txt` に載っている板) と秘密鍵ファイル
 (`trip_secret.txt` など、パーミッション 600) が自動で作られます。
 

@@ -302,6 +302,105 @@
     (unless good (format t "  ⚠️ 期待と違う結果があります。公開する前に server.lisp の配信判定を確認してください。~%"))
     good))
 
+;;; ---------- cloudflared トンネル (Python 版 setup_expose.py の start_tunnel 相当) ----------
+(defun cloudflared-on-path ()
+  "PATH 上に cloudflared があればそのパス文字列、無ければ NIL。"
+  (handler-case
+      (let* ((p (sb-ext:run-program "which" '("cloudflared") :output :stream :wait t :search t))
+             (line (and p (read-line (sb-ext:process-output p) nil nil))))
+        (and line (plusp (length (trim-space line))) (trim-space line)))
+    (error () nil)))
+
+(defun cloudflared-local-path ()
+  "アプリフォルダに置いた cloudflared のパス (Python 版の ./cloudflared と同じ場所)。"
+  (app-path "cloudflared"))
+
+(defun download-cloudflared (dest)
+  "公式リリースから cloudflared をダウンロードして実行可能にする。成功で T。"
+  (let* ((mach (handler-case
+                   (let* ((p (sb-ext:run-program "uname" '("-m") :output :stream :wait t :search t))
+                          (line (and p (read-line (sb-ext:process-output p) nil nil))))
+                     (and line (trim-space line)))
+                 (error () nil)))
+         (asset (cond ((and mach (search "aarch64" mach)) "cloudflared-linux-arm64")
+                      ((and mach (search "arm" mach)) "cloudflared-linux-arm64")
+                      (t "cloudflared-linux-amd64")))
+         (url (format nil "https://github.com/cloudflare/cloudflared/releases/latest/download/~a" asset)))
+    (format t "cloudflared をダウンロード中... (~a)~%" url)
+    (handler-case
+        (let ((p (sb-ext:run-program "curl" (list "-sL" url "-o" (namestring dest))
+                                     :output nil :error nil :wait t :search t)))
+          (and p (zerop (sb-ext:process-exit-code p))
+               (file-regular-p dest)
+               (progn (chmod-file dest #o755) t)))
+      (error () nil))))
+
+(defun ensure-cloudflared ()
+  "cloudflared の実行ファイル名 (またはパス) を返す。用意できなければ NIL。
+   Python 版と同じく、PATH に無ければアプリフォルダへダウンロードする。"
+  (or (cloudflared-on-path)
+      (let ((local (cloudflared-local-path)))
+        (if (file-regular-p local)
+            (namestring local)
+            (when (download-cloudflared local)
+              (namestring local))))))
+
+(defun extract-tunnel-url (line)
+  "cloudflared の出力行から公開URL https://….trycloudflare.com を取り出す。無ければ NIL。
+   エラー行に出る api.trycloudflare.com は公開URLではないので拾わない。"
+  (when (not (search "failed" line))
+    (let ((start (search "https://" line)) (marker ".trycloudflare.com"))
+      (when start
+        (let ((m (search marker line :start2 start)))
+          (when (and m (string/= (subseq line (+ start 8) m) "api"))
+            (subseq line start (+ m (length marker)))))))))
+
+(defun start-tunnel (port)
+  "cloudflared tunnel を起動し、公開URLが取れるまで最大20秒待つ。
+   戻り値: プロセス (失敗したら NIL)。出力は読み取りスレッドでそのまま表示する。"
+  (format t "☁️ Cloudflare Tunnel をセットアップしています...~%")
+  (let ((bin (ensure-cloudflared)))
+    (unless bin
+      (format t "❌ cloudflared を用意できませんでした (ダウンロードに失敗)。トンネルは張れません。~%")
+      (return-from start-tunnel nil))
+    (let ((proc (handler-case
+                    (sb-ext:run-program bin (list "tunnel" "--url" (format nil "http://127.0.0.1:~d" port))
+                                        :output :stream :error :output :wait nil :search t)
+                  (error () nil))))
+      (unless proc
+        (format t "❌ cloudflared を起動できませんでした。~%")
+        (return-from start-tunnel nil))
+      (let ((url-box (list nil)) (out (sb-ext:process-output proc)))
+        (sb-thread:make-thread
+         (lambda ()
+           (handler-case
+               (loop for line = (read-line out nil nil)
+                     while line
+                     do (format t "~a~%" line) (finish-output)
+                        (let ((u (extract-tunnel-url line)))
+                          (when u (setf (first url-box) u))))
+             (error () nil)))
+         :name "cloudflared-output")
+        (format t "⏳ トンネルの公開URLを取得しています...~%")
+        (loop repeat 100 do (when (first url-box) (return)) (sleep 0.2))
+        (if (first url-box)
+            (format t "~%🎉 【BBSアクセス先URL】: ~a/~%~%" (first url-box))
+            (format t "❌ 公開URLの取得に失敗しました。トンネルプロセスの出力を確認してください。~%"))
+        proc))))
+
+(defun setup-tunnel-command ()
+  "`--setup-tunnel`: cloudflared を用意して版数を表示する (事前セットアップ用)。"
+  (let ((bin (ensure-cloudflared)))
+    (if (null bin)
+        (progn (format *error-output* "❌ cloudflared を用意できませんでした。~%") 1)
+        (let ((p (handler-case (sb-ext:run-program bin '("--version") :output :stream :error :output :wait t :search t)
+                   (error () nil))))
+          (if p
+              (let ((line (read-line (sb-ext:process-output p) nil nil)))
+                (format t "✅ cloudflared の用意ができました: ~a (~a)~%" (or line "") bin)
+                0)
+              (progn (format *error-output* "❌ cloudflared を実行できませんでした。~%") 1))))))
+
 (defun serve (port &key tunnel)
   (setup-bbs-directories)
   (start-server port)
@@ -309,17 +408,15 @@
   (loop repeat 50 do (when (= (http-status port "/style.css") 200) (return)) (sleep 0.2))
   (format t "✅ Webサーバーがポート ~d で正常に応答しました。~%" port)
   (self-check port)
-  (when tunnel
-    (let ((bin (or (ignore-errors (sb-ext:process-output
-                                   (sb-ext:run-program "which" '("cloudflared") :output :stream :wait t)))
-                   nil)))
-      (declare (ignore bin))
-      (if (ignore-errors (sb-ext:run-program "cloudflared" (list "tunnel" "--url" (format nil "http://127.0.0.1:~d" port))
-                                             :output nil :error nil :wait nil :search t))
-          (format t "☁️ Cloudflare Tunnel を起動しました (URL は cloudflared の出力を見てください)。~%")
-          (format t "⚠️ cloudflared が見つからないため、トンネルは張れませんでした。~%"))))
-  (format t "~%🏠 ローカルで起動しました: http://127.0.0.1:~d/~%~%⏳ サーバー稼働中... 停止するには Ctrl+C を押してください。~%" port)
-  (handler-case (loop (sleep 3600))
-    (sb-sys:interactive-interrupt () (format t "~%🛑 終了します。~%")))
-  (ignore-errors (sb-bsd-sockets:socket-close *server-socket*))
-  0)
+  (let ((tunnel-proc nil))
+    (if tunnel
+        (setf tunnel-proc (start-tunnel port))
+        (format t "~%🏠 ローカルで起動しました: http://127.0.0.1:~d/~%" port))
+    (format t "~%⏳ サーバー稼働中... 停止するには Ctrl+C を押してください。~%" port)
+    (handler-case (loop (sleep 3600))
+      (sb-sys:interactive-interrupt () (format t "~%🛑 終了します。~%")))
+    (when tunnel-proc
+      (ignore-errors (sb-ext:process-kill tunnel-proc 15))
+      (ignore-errors (sb-ext:process-wait tunnel-proc)))
+    (ignore-errors (sb-bsd-sockets:socket-close *server-socket*))
+    0))
