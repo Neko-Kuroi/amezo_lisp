@@ -1,7 +1,7 @@
 ;;;; config.lisp - 設定値と config.ini (Python 版 amezo.config_load と同じ検査)
 (in-package :amezo)
 
-(defvar *app-dir* nil "掲示板のルートディレクトリ (pathname)。起動時に決める。")
+;; *app-dir* は package.lisp で宣言済み (前方宣言)
 
 ;;; 設定値 (config.ini で上書きされる)
 (defparameter *copyright*
